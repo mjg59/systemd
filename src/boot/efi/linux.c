@@ -82,14 +82,42 @@ static inline VOID linux_efi_handover(EFI_HANDLE image, struct SetupHeader *setu
 }
 #endif
 
+CHAR8 *strfind(CHAR8 *needle, CHAR8 *haystack) {
+        int i;
+
+        while (*haystack) {
+                int found = 1;
+
+                i = 0;
+                while (*(needle + i)) {
+                        if (*(haystack + i) != *(needle + i)) {
+                                found = 0;
+                                break;
+                        }
+                        i++;
+                }
+                if (found == 1)
+                        return haystack;
+                haystack++;
+        }
+
+        return NULL;
+}
+
 EFI_STATUS linux_exec(EFI_HANDLE *image,
                       CHAR8 *cmdline, UINTN cmdline_len,
                       UINTN linux_addr,
                       UINTN initrd_addr, UINTN initrd_size, BOOLEAN secure) {
         struct SetupHeader *image_setup;
         struct SetupHeader *boot_setup;
+        EFI_LOADED_IMAGE *loaded_image;
         EFI_PHYSICAL_ADDRESS addr;
         EFI_STATUS err;
+
+        err = uefi_call_wrapper(BS->OpenProtocol, 6, image, &LoadedImageProtocol, (VOID **)&loaded_image,
+                                *image, NULL, EFI_OPEN_PROTOCOL_GET_PROTOCOL);
+        if (EFI_ERROR(err))
+                return err;
 
         image_setup = (struct SetupHeader *)(linux_addr);
         if (image_setup->signature != 0xAA55 || image_setup->header != SETUP_MAGIC)
@@ -122,6 +150,59 @@ EFI_STATUS linux_exec(EFI_HANDLE *image,
         boot_setup->code32_start = (UINT32)linux_addr + (image_setup->setup_secs+1) * 512;
 
         if (cmdline) {
+                EFI_PHYSICAL_ADDRESS new_initrd = 0;
+                EFI_FILE *root;
+                CHAR8 *initrd;
+
+                root = LibOpenRoot(loaded_image->DeviceHandle);
+
+                while ((initrd = strfind((CHAR8 *)"initrd=", cmdline))) {
+                        CHAR8 *file_buffer = NULL;
+                        CHAR8 *path = (CHAR8 *)(initrd + 7);
+                        CHAR8 orig;
+                        CHAR16 *efi_path;
+                        UINTN file_size;
+                        int len = 0;
+                        int i;
+
+                        while (*(path + len) != ' ' && *(path + len) != '\0')
+                                len++;
+
+                        orig = path[len];
+                        path[len] = '\0';
+
+                        efi_path = stra_to_path(path);
+                        path[len] = orig;
+
+                        /* Remove the initrd argument */
+                        for (i = 0; i < len + 7; i++)
+                                initrd[i] = ' ';
+
+                        file_size = file_read(root, efi_path, 0, 0, &file_buffer);
+
+                        if (file_size) {
+                                EFI_PHYSICAL_ADDRESS old_addr = new_initrd;
+
+                                new_initrd = boot_setup->ramdisk_max;
+
+                                err = uefi_call_wrapper(BS->AllocatePages, 4, AllocateMaxAddress,
+                                                        EfiLoaderData, EFI_SIZE_TO_PAGES(initrd_size + file_size),
+                                                        &new_initrd);
+                                if (EFI_ERROR(err))
+                                        return err;
+
+                                if (initrd_size)
+                                        CopyMem((VOID *)(UINTN)new_initrd, (VOID *)(UINTN)initrd_addr, initrd_size);
+                                CopyMem((VOID *)(UINTN)(new_initrd + initrd_size), file_buffer, file_size);
+
+                                FreePool(file_buffer);
+                                if (old_addr)
+                                        uefi_call_wrapper(BS->FreePages, 2, old_addr, EFI_SIZE_TO_PAGES(initrd_size));
+
+                                initrd_size += file_size;
+                                initrd_addr = (UINTN)new_initrd;
+                        }
+                }
                 addr = 0xA0000;
                 err = uefi_call_wrapper(BS->AllocatePages, 4, AllocateMaxAddress, EfiLoaderData,
                                         EFI_SIZE_TO_PAGES(cmdline_len + 1), &addr);
