@@ -43,8 +43,8 @@ EFI_STATUS efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *sys_table) {
         UINTN addrs[ELEMENTSOF(sections)-1] = {};
         UINTN offs[ELEMENTSOF(sections)-1] = {};
         UINTN szs[ELEMENTSOF(sections)-1] = {};
-        CHAR8 *cmdline = NULL;
-        UINTN cmdline_len;
+        CHAR8 *cmdline = NULL, *builtin_cmdline = NULL;
+        UINTN cmdline_len, builtin_cmdline_len;
         CHAR16 uuid[37];
         EFI_STATUS err;
 
@@ -75,12 +75,13 @@ EFI_STATUS efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *sys_table) {
 
         cmdline_len = szs[0];
 
-        /* if we are not in secure boot mode, accept a custom command line and replace the built-in one */
-        if (!secure && loaded_image->LoadOptionsSize > 0 && *(CHAR16 *)loaded_image->LoadOptions != 0) {
+        if (loaded_image->LoadOptionsSize > 0 && *(CHAR16 *)loaded_image->LoadOptions != 0) {
                 CHAR16 *options;
                 CHAR8 *line;
                 UINTN i;
 
+                builtin_cmdline = cmdline;
+                builtin_cmdline_len = cmdline_len;
                 options = (CHAR16 *)loaded_image->LoadOptions;
                 cmdline_len = (loaded_image->LoadOptionsSize / sizeof(CHAR16)) * sizeof(CHAR8);
                 line = AllocatePool(cmdline_len);
@@ -131,7 +132,7 @@ EFI_STATUS efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *sys_table) {
         if (szs[3] > 0)
                 graphics_splash((UINT8 *)((UINTN)loaded_image->ImageBase + addrs[3]), szs[3], NULL);
 
-        err = linux_exec(image, cmdline, cmdline_len,
+        err = linux_exec(image, cmdline, cmdline_len, builtin_cmdline, builtin_cmdline_len,
                          (UINTN)loaded_image->ImageBase + addrs[1],
                          (UINTN)loaded_image->ImageBase + addrs[2], szs[2], secure);
 

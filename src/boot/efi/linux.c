@@ -19,6 +19,8 @@
 #include "linux.h"
 #include "util.h"
 
+CHAR8 *blacklist[] = { (CHAR8 *)"init=", (CHAR8 *)"break=", (CHAR8 *)"rd.shell", (CHAR8 *)"rd.break=" };
+
 #define SETUP_MAGIC             0x53726448      /* "HdrS" */
 struct SetupHeader {
         UINT8 boot_sector[0x01f1];
@@ -106,6 +108,7 @@ CHAR8 *strfind(CHAR8 *needle, CHAR8 *haystack) {
 
 EFI_STATUS linux_exec(EFI_HANDLE *image,
                       CHAR8 *cmdline, UINTN cmdline_len,
+                      CHAR8 *builtin_cmdline, UINTN builtin_cmdline_len,
                       UINTN linux_addr,
                       UINTN initrd_addr, UINTN initrd_size, BOOLEAN secure) {
         struct SetupHeader *image_setup;
@@ -137,6 +140,7 @@ EFI_STATUS linux_exec(EFI_HANDLE *image,
         boot_setup->loader_id = 0xff;
 
         if (secure) {
+                CHAR8 *new_cmdline;
                 /* set secure boot flag in linux kernel zero page, see
                    - Documentation/x86/zero-page.txt
                    - arch/x86/include/uapi/asm/bootparam.h
@@ -145,6 +149,36 @@ EFI_STATUS linux_exec(EFI_HANDLE *image,
                    Possible values: 0 (unassigned), 1 (undetected), 2 (disabled), 3 (enabled)
                 */
                 boot_setup->boot_sector[0x1ec] = 3;
+
+                /* Append the builtin command line to the user-provided one, removing blacklisted params */
+                if (builtin_cmdline) {
+                        CHAR8 *param;
+                        unsigned int i, j;
+
+                        for (i=0; i<sizeof(blacklist)/sizeof(char *); i++) {
+                                param = strfind((CHAR8 *)blacklist[i], cmdline);
+
+                                if (param) {
+                                        for (j=0; param[j] != ' ' && param[j] != '\0'; j++) {
+                                                param[j] = ' ';
+                                        }
+                                }
+                        }
+
+                        param = strfind((CHAR8 *)" --", cmdline);
+                        if (param) {
+                                *(param-1) = ' ';
+                                *(param) = '\0';
+                        }
+
+                        new_cmdline = AllocatePool(strlena(cmdline) + builtin_cmdline_len + 1);
+                        if (!new_cmdline)
+                                return EFI_OUT_OF_RESOURCES;
+                        CopyMem(new_cmdline, cmdline, strlena(cmdline));
+                        CopyMem(new_cmdline + strlena(cmdline), builtin_cmdline, builtin_cmdline_len + 1);
+                        cmdline_len = strlena(cmdline) + builtin_cmdline_len;
+                        cmdline = new_cmdline;
+                }
         }
 
         boot_setup->code32_start = (UINT32)linux_addr + (image_setup->setup_secs+1) * 512;
